@@ -8,7 +8,7 @@ uint_fast8_t checked_fget8( FILE * fileptr )
     int character = fgetc( fileptr );
     if( character == EOF )
     {
-        fprintf( stderr, "Unexpected end of file!\n" );
+        fprintf( stderr, "\nUnexpected end of file!\n" );
         exit( EXIT_FAILURE );
     }
     return character & 0xff;
@@ -25,6 +25,20 @@ uint_fast32_t checked_fget32( FILE * fileptr )
 {
     uint_fast32_t val = checked_fget16( fileptr ) << 16;
     val |= checked_fget16( fileptr );
+    return val;
+}
+
+uint_fast16_t checked_fget16le( FILE * fileptr )
+{
+    uint_fast16_t val = checked_fget8( fileptr );
+    val |= checked_fget8( fileptr ) << 8;
+    return val;
+}
+
+uint_fast32_t checked_fget32le( FILE * fileptr )
+{
+    uint_fast32_t val = checked_fget16le( fileptr );
+    val |= checked_fget16le( fileptr ) << 16;
     return val;
 }
 
@@ -59,7 +73,7 @@ int main( const int argc, const char * const * const argv )
         fprintf( stderr, "Unrecognized file header: %s\n", fourcc );
         return EXIT_FAILURE;
     }
-    fprintf( stdout, "%14s: 0x%08" PRIxFAST32 "\n", "Unknown", checked_fget32( omtfile ) );
+    fprintf( stdout, "%17s: 0x%08" PRIxFAST32 "\n", "Unknown", checked_fget32( omtfile ) );
     for( size_t i = 0; i < 4; i++ )
     {
         fourcc[i] = checked_fget8( omtfile );
@@ -70,31 +84,58 @@ int main( const int argc, const char * const * const argv )
         return EXIT_FAILURE;
     }
     uint_fast16_t width = checked_fget16( omtfile );
-    fprintf( stdout, "%14s: %" PRIuFAST16 "\n", "Width", width );
+    fprintf( stdout, "%17s: %" PRIuFAST16 "\n", "Width", width );
     uint_fast16_t height = checked_fget16( omtfile );
-    fprintf( stdout, "%14s: %" PRIuFAST16 "\n", "Height", height );
+    fprintf( stdout, "%17s: %" PRIuFAST16 "\n", "Height", height );
     uint_fast16_t omtbpp = checked_fget16( omtfile );
-    fprintf( stdout, "%14s: %" PRIuFAST16 "\n", "Bits per pixel", omtbpp );
+    fprintf( stdout, "%17s: %" PRIuFAST16 "\n", "Bits per pixel", omtbpp );
+    if( omtbpp != 16 && omtbpp != 32 )
+    {
+        fprintf( stderr, "Unsupported format!\n" );
+        return EXIT_FAILURE;
+    }
     uint_fast8_t compression = checked_fget8( omtfile );
-    fprintf( stdout, "%14s: %" PRIuFAST8 "\n", "Compression", compression );
+    fprintf( stdout, "%17s: %" PRIuFAST8 "\n", "Compression", compression );
+    if( !(compression == 1 && omtbpp == 16) && !(compression == 2 && omtbpp == 32) )
+    {
+        fprintf( stderr, "Unsupported format!\n" );
+        return EXIT_FAILURE;
+    }
     uint_fast8_t version = checked_fget8( omtfile );
-    fprintf( stdout, "%14s: %" PRIuFAST8 "\n", "Version", version );
+    fprintf( stdout, "%17s: %" PRIuFAST8 "\n", "Version", version );
+    if( version != 1 )
+    {
+        fprintf( stderr, "Unsupported format!\n" );
+        return EXIT_FAILURE;
+    }
     uint_fast16_t stride = checked_fget16( omtfile );
-    fprintf( stdout, "%14s: %" PRIuFAST16 "\n", "Stride", stride );
-    uint_fast8_t transparency = checked_fget8( omtfile );
-    fprintf( stdout, "%14s: %s\n", "Transparent", transparency ? "Yes" : "No" );
-    if( version == 0 || transparency )
+    fprintf( stdout, "%17s: %" PRIuFAST16 "\n", "Stride", stride );
+    if( stride != width * (omtbpp >> 3) )
     {
         fprintf( stderr, "Unsupported format!\n" );
         return EXIT_FAILURE;
     }
-    uint_fast8_t paletted = checked_fget8( omtfile );
-    fprintf( stdout, "%14s: %s\n", "Palette", paletted ? "Yes" : "No" );
-    if( paletted )
+    uint_fast16_t transparency = checked_fget16( omtfile );
+    fprintf( stdout, "%17s: %s\n", "Transparent", transparency ? "Yes" : "No" );
+    if( transparency > 1 )
     {
         fprintf( stderr, "Unsupported format!\n" );
         return EXIT_FAILURE;
     }
+    uint_fast32_t transparent = 0;
+    if( transparency )
+    {
+        transparent = checked_fget32( omtfile );
+        fprintf( stdout, "%17s: 0x%08" PRIxFAST32 "\n", "Transparent color", transparent );
+    }
+    uint_fast16_t paletted = checked_fget16( omtfile );
+    fprintf( stdout, "%17s: %s\n", "Palette", paletted ? "Yes" : "No" );
+    if( paletted != 0 )
+    {
+        fprintf( stderr, "Unsupported format!\n" );
+        return EXIT_FAILURE;
+    }
+    fprintf( stdout, "%17s: %" PRIuFAST32 "\n", "Compressed size", checked_fget32( omtfile ) );
     
     
     png_structp png_ptr = png_create_write_struct( PNG_LIBPNG_VER_STRING, NULL, NULL, NULL );
@@ -115,11 +156,117 @@ int main( const int argc, const char * const * const argv )
         return EXIT_FAILURE;
     }
     png_init_io( png_ptr, pngfile );
-    png_set_IHDR( png_ptr, info_ptr, 1, 1, 8, PNG_COLOR_TYPE_GRAY,
+    
+    
+    png_set_IHDR( png_ptr, info_ptr, width, height, 8, PNG_COLOR_TYPE_RGB,
                   PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
                   PNG_FILTER_TYPE_DEFAULT );
+    if( transparency && omtbpp == 16 )
+    {
+        png_set_tRNS( png_ptr, info_ptr, NULL, 0, (png_color_16[]){{0,
+                      ((transparent >> 7) & 0xf8) | ((transparent >> 12) & 0x07),
+                      ((transparent >> 2) & 0xf8) | ((transparent >> 7) & 0x07),
+                      ((transparent << 3) & 0xf8) | ((transparent >> 2) & 0x07),
+                      0}});
+    }
+    else if( transparency && omtbpp == 32 )
+    {
+        png_set_tRNS( png_ptr, info_ptr, NULL, 0, (png_color_16[]){{0,
+                      (transparent >> 16) & 0xff,
+                      (transparent >> 8) & 0xff,
+                      transparent & 0xff,
+                      0}});
+    }
     png_write_info( png_ptr, info_ptr );
-    png_write_row( png_ptr, (png_byte[]){0} );
+    if( omtbpp == 16 )
+    {
+        uint_least16_t * omtrow = malloc( stride );
+        png_bytep row = malloc( 3 * width * sizeof( png_byte ) );
+        if( !omtrow || !row )
+        {
+            fprintf( stderr, "Failed to allocate memory.\n" );
+            return EXIT_FAILURE;
+        }
+        
+        for( size_t i = 0; i < height; i++ )
+        {
+            fprintf( stdout, "%" PRIuFAST16 " ", checked_fget16( omtfile ) );
+            size_t j = 0;
+            while( j < width )
+            {
+                int_fast8_t run = (int8_t)checked_fget16le( omtfile );
+                if( run < 0 )
+                {
+                    uint_fast16_t temp = checked_fget16( omtfile );
+                    for( size_t k = -run + 1; k > 0; k-- )
+                    {
+                        omtrow[j] = temp;
+                        j++;
+                    }
+                }
+                else
+                {
+                    for( size_t k = run + 1; k > 0; k-- )
+                    {
+                        omtrow[j] = checked_fget16( omtfile );
+                        j++;
+                    }
+                }
+            }
+            for( j = 0; j < width; j++ )
+            {
+                row[j * 3] = ((omtrow[j] >> 7) & 0xf8) | ((omtrow[j] >> 12) & 0x07);
+                row[j * 3 + 1] = ((omtrow[j] >> 2) & 0xf8) | ((omtrow[j] >> 7) & 0x07);
+                row[j * 3 + 2] = ((omtrow[j] << 3) & 0xf8) | ((omtrow[j] >> 2) & 0x07);
+            }
+            png_write_row( png_ptr, row );
+        }
+    }
+    else if( omtbpp == 32 )
+    {
+        uint_least32_t * omtrow = malloc( stride );
+        png_bytep row = malloc( 3 * width * sizeof( png_byte ) );
+        if( !omtrow || !row )
+        {
+            fprintf( stderr, "Failed to allocate memory.\n" );
+            return EXIT_FAILURE;
+        }
+        
+        for( size_t i = 0; i < height; i++ )
+        {
+            fprintf( stdout, "%" PRIuFAST16 " ", checked_fget16( omtfile ) );
+            size_t j = 0;
+            while( j < width )
+            {
+                int_fast8_t run = (int8_t)checked_fget32le( omtfile );
+                if( run < 0 )
+                {
+                    uint_fast32_t temp = checked_fget32( omtfile );
+                    for( size_t k = -run + 1; k > 0; k-- )
+                    {
+                        omtrow[j] = temp;
+                        j++;
+                    }
+                }
+                else
+                {
+                    for( size_t k = run + 1; k > 0; k-- )
+                    {
+                        omtrow[j] = checked_fget32( omtfile );
+                        j++;
+                    }
+                }
+            }
+            for( j = 0; j < width; j++ )
+            {
+                row[j * 3] = (omtrow[j] >> 16) & 0xff;
+                row[j * 3 + 1] = (omtrow[j] >> 8) & 0xff;
+                row[j * 3 + 2] = omtrow[j] & 0xff;
+            }
+            png_write_row( png_ptr, row );
+        }
+    }
+    
     png_write_end( png_ptr, NULL );
     fclose( pngfile );
     return EXIT_SUCCESS;

@@ -87,16 +87,16 @@ int main( const int argc, const char * const * const argv )
     fprintf( stdout, "%17s: %" PRIuFAST16 "\n", "Width", width );
     uint_fast16_t height = checked_fget16( omtfile );
     fprintf( stdout, "%17s: %" PRIuFAST16 "\n", "Height", height );
-    uint_fast16_t omtbpp = checked_fget16( omtfile );
-    fprintf( stdout, "%17s: %" PRIuFAST16 "\n", "Bits per pixel", omtbpp );
-    if( omtbpp != 16 && omtbpp != 32 )
+    uint_fast16_t bpp = checked_fget16( omtfile );
+    fprintf( stdout, "%17s: %" PRIuFAST16 "\n", "Bits per pixel", bpp );
+    if( bpp != 8 && bpp != 16 && bpp != 32 )
     {
         fprintf( stderr, "Unsupported format!\n" );
         return EXIT_FAILURE;
     }
     uint_fast8_t compression = checked_fget8( omtfile );
     fprintf( stdout, "%17s: %" PRIuFAST8 "\n", "Compression", compression );
-    if( !(compression == 1 && omtbpp == 16) && !(compression == 2 && omtbpp == 32) )
+    if( !(compression == 0 && bpp == 8) && !(compression == 1 && bpp == 16) && !(compression == 2 && bpp == 32) )
     {
         fprintf( stderr, "Unsupported format!\n" );
         return EXIT_FAILURE;
@@ -110,7 +110,7 @@ int main( const int argc, const char * const * const argv )
     }
     uint_fast16_t stride = checked_fget16( omtfile );
     fprintf( stdout, "%17s: %" PRIuFAST16 "\n", "Stride", stride );
-    if( stride != width * (omtbpp >> 3) )
+    if( stride != width * (bpp >> 3) )
     {
         fprintf( stderr, "Unsupported format!\n" );
         return EXIT_FAILURE;
@@ -130,10 +130,72 @@ int main( const int argc, const char * const * const argv )
     }
     uint_fast16_t paletted = checked_fget16( omtfile );
     fprintf( stdout, "%17s: %s\n", "Palette", paletted ? "Yes" : "No" );
-    if( paletted != 0 )
+    if( paletted > 1 || (paletted && bpp > 8) )
     {
         fprintf( stderr, "Unsupported format!\n" );
         return EXIT_FAILURE;
+    }
+    uint_fast32_t palsize = 0;
+    png_colorp palette = NULL;
+    png_bytep tpalette = NULL;
+    if( paletted )
+    {
+        for( size_t i = 0; i < 4; i++ )
+        {
+            fourcc[i] = checked_fget8( omtfile );
+        }
+        if( memcmp( fourcc, "OPa2", 4 ) )
+        {
+            fprintf( stderr, "Unrecognized palette header: %s\n", fourcc );
+            return EXIT_FAILURE;
+        }
+        if( checked_fget8( omtfile ) )
+        {
+            fprintf( stderr, "Unsupported format!\n" );
+            return EXIT_FAILURE;
+        }
+        palsize = checked_fget32( omtfile );
+        fprintf( stdout, "%17s: 0x%08" PRIxFAST32 "\n", "Palette size", palsize );
+        if( palsize > 256 || (transparency && transparent > palsize) )
+        {
+            fprintf( stderr, "Unsupported format!\n" );
+            return EXIT_FAILURE;
+        }
+        palette = malloc( (palsize > 2 ? palsize : 2) * sizeof(png_color) );
+        if( !palette )
+        {
+            fprintf( stderr, "Failed to allocate palette.\n" );
+            return EXIT_FAILURE;
+        }
+        palette[0].red = 0xff;
+        palette[0].green = 0xff;
+        palette[0].blue = 0xff;
+        palette[1].red = 0x00;
+        palette[1].green = 0x00;
+        palette[1].blue = 0x00;
+        for( size_t i = 0; i < palsize; i++ )
+        {
+            palette[i].red = checked_fget16( omtfile ) >> 8;
+            palette[i].green = checked_fget16( omtfile ) >> 8;
+            palette[i].blue = checked_fget16( omtfile ) >> 8;
+        }
+        fseek( omtfile, 4096, SEEK_CUR ); // whyyyy
+        if( transparency )
+        {
+            tpalette = malloc( (palsize > 2 ? palsize : 2) * sizeof(png_byte) );
+            if( !tpalette )
+            {
+                fprintf( stderr, "Failed to allocate palette.\n" );
+                return EXIT_FAILURE;
+            }
+            tpalette[0] = 0xff;
+            tpalette[1] = 0xff;
+            for( size_t i = 0; i < palsize; i++ )
+            {
+                tpalette[i] = 0xff;
+            }
+            tpalette[transparent] = 0x00;
+        }
     }
     fprintf( stdout, "%17s: %" PRIuFAST32 "\n", "Compressed size", checked_fget32( omtfile ) );
     
@@ -157,11 +219,24 @@ int main( const int argc, const char * const * const argv )
     }
     png_init_io( png_ptr, pngfile );
     
-    
-    png_set_IHDR( png_ptr, info_ptr, width, height, 8, PNG_COLOR_TYPE_RGB,
-                  PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
-                  PNG_FILTER_TYPE_DEFAULT );
-    if( transparency && omtbpp == 16 )
+    if( bpp == 8 )
+    {
+        png_set_IHDR( png_ptr, info_ptr, width, height, bpp, PNG_COLOR_TYPE_PALETTE,
+                      PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
+                      PNG_FILTER_TYPE_DEFAULT );
+        png_set_PLTE( png_ptr, info_ptr, palette, palsize > 2 ? palsize : 2 );
+    }
+    else if( bpp >= 16 )
+    {
+        png_set_IHDR( png_ptr, info_ptr, width, height, 8, PNG_COLOR_TYPE_RGB,
+                      PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
+                      PNG_FILTER_TYPE_DEFAULT );
+    }
+    if( transparency && bpp == 8 )
+    {
+        png_set_tRNS( png_ptr, info_ptr, tpalette, palsize > 2 ? palsize : 2, NULL );
+    }
+    else if( transparency && bpp == 16 )
     {
         png_set_tRNS( png_ptr, info_ptr, NULL, 0, (png_color_16[]){{0,
                       ((transparent >> 7) & 0xf8) | ((transparent >> 12) & 0x07),
@@ -169,7 +244,7 @@ int main( const int argc, const char * const * const argv )
                       ((transparent << 3) & 0xf8) | ((transparent >> 2) & 0x07),
                       0}});
     }
-    else if( transparency && omtbpp == 32 )
+    else if( transparency && bpp == 32 )
     {
         png_set_tRNS( png_ptr, info_ptr, NULL, 0, (png_color_16[]){{0,
                       (transparent >> 16) & 0xff,
@@ -178,7 +253,49 @@ int main( const int argc, const char * const * const argv )
                       0}});
     }
     png_write_info( png_ptr, info_ptr );
-    if( omtbpp == 16 )
+    if( bpp == 8 )
+    {
+        uint_least8_t * omtrow = malloc( stride );
+        png_bytep row = malloc( width * sizeof( png_byte ) );
+        if( !omtrow || !row )
+        {
+            fprintf( stderr, "Failed to allocate memory.\n" );
+            return EXIT_FAILURE;
+        }
+        
+        for( size_t i = 0; i < height; i++ )
+        {
+            fprintf( stdout, "%" PRIuFAST16 " ", checked_fget16( omtfile ) );
+            size_t j = 0;
+            while( j < width )
+            {
+                int_fast8_t run = (int8_t)checked_fget8( omtfile );
+                if( run < 0 )
+                {
+                    uint_fast8_t temp = checked_fget8( omtfile );
+                    for( size_t k = -run + 1; k > 0; k-- )
+                    {
+                        omtrow[j] = temp;
+                        j++;
+                    }
+                }
+                else
+                {
+                    for( size_t k = run + 1; k > 0; k-- )
+                    {
+                        omtrow[j] = checked_fget8( omtfile );
+                        j++;
+                    }
+                }
+            }
+            for( j = 0; j < width; j++ )
+            {
+                row[j] = omtrow[j];
+            }
+            png_write_row( png_ptr, row );
+        }
+    }
+    else if( bpp == 16 )
     {
         uint_least16_t * omtrow = malloc( stride );
         png_bytep row = malloc( 3 * width * sizeof( png_byte ) );
@@ -222,7 +339,7 @@ int main( const int argc, const char * const * const argv )
             png_write_row( png_ptr, row );
         }
     }
-    else if( omtbpp == 32 )
+    else if( bpp == 32 )
     {
         uint_least32_t * omtrow = malloc( stride );
         png_bytep row = malloc( 3 * width * sizeof( png_byte ) );

@@ -44,9 +44,9 @@ uint_fast32_t checked_fget32le( FILE * fileptr )
 
 int main( const int argc, const char * const * const argv )
 {
-    if( argc != 3 )
+    if( argc < 2 || argc > 3 )
     {
-        fprintf( stderr, "Usage: omcvdec image image.png\n" );
+        fprintf( stderr, "Usage: omcvdec image [image.png]\n" );
         return argc > 1 ? EXIT_FAILURE : EXIT_SUCCESS;
     }
     FILE * omtfile = NULL;
@@ -58,11 +58,31 @@ int main( const int argc, const char * const * const argv )
         fprintf( stderr, "Can't read file: %s\n", argv[1] );
         return EXIT_FAILURE;
     }
-    pngfile = fopen( argv[2], "wb" );
+    char * name;
+    if( argc == 2 )
+    {
+        name = malloc( strlen( argv[1] ) + strlen( ".png" ) + 1 );
+        if( !name )
+        {
+            fprintf( stderr, "Failed to allocate memory.\n" );
+            return EXIT_FAILURE;
+        }
+        strcpy( name, argv[1] );
+        strcat( name, ".png" );
+    }
+    else
+    {
+        name = (char *)argv[2];
+    }
+    pngfile = fopen( name, "wb" );
     if( !pngfile )
     {
-        fprintf( stderr, "Can't write file: %s\n", argv[2] );
+        fprintf( stderr, "Can't write file: %s\n", name );
         return EXIT_FAILURE;
+    }
+    if( argc == 2 )
+    {
+        free( name );
     }
     for( size_t i = 0; i < 4; i++ )
     {
